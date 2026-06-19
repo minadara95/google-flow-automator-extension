@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Google Flow Prompt Automator",
+  "version": "1.0",
+  "description": "Tự động gửi nhiều prompt vào Google Flow để tạo ảnh hàng loạt",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["https://labs.google/*"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://labs.google/fx/*/tools/flow/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
