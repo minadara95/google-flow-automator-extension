@@ -15,33 +15,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 // ── Tìm ô input chat ─────────────────────────────────────────
-// Google Flow dùng div[contenteditable] làm chat input.
-// Textarea duy nhất trên trang là reCAPTCHA hidden — bỏ qua.
+// Google Flow dùng div[contenteditable] — textarea là reCAPTCHA ẩn, bỏ qua.
 function findInput() {
   const editables = [...document.querySelectorAll('[contenteditable="true"]')];
   if (editables.length === 0) return null;
-  if (editables.length === 1) return editables[0];
-  // Nếu có nhiều: lấy cái thấp nhất (gần đáy màn hình nhất)
+  // Lấy cái thấp nhất (gần đáy màn hình = ô chat)
   return editables.sort((a, b) =>
     b.getBoundingClientRect().top - a.getBoundingClientRect().top
   )[0];
 }
 
 // ── Tìm nút Send ─────────────────────────────────────────────
-// Container của input là grandparent (level 2).
-// Send button là button RIGHTMOST trong container đó.
+// Container của input là grandparent (2 cấp lên). Send button = rightmost button trong đó.
 function findSendButton() {
   const input = findInput();
   if (!input) return null;
-
-  // Đi lên 2 cấp để tới container chứa input + các action buttons
   const container = input.parentElement?.parentElement;
   if (!container) return null;
-
   const btns = [...container.querySelectorAll('button')].filter(b => isVisible(b));
   if (btns.length === 0) return null;
-
-  // Send button = rightmost button trong container
   return btns.sort((a, b) =>
     b.getBoundingClientRect().right - a.getBoundingClientRect().right
   )[0];
@@ -52,132 +44,137 @@ function isVisible(el) {
   const rect = el.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0 &&
     getComputedStyle(el).visibility !== 'hidden' &&
-    getComputedStyle(el).display !== 'none' &&
-    getComputedStyle(el).opacity !== '0';
+    getComputedStyle(el).display !== 'none';
 }
 
-// ── Xóa nội dung input đúng cách với React ───────────────────
-async function clearInput(el) {
-  el.focus();
-  await sleep(100);
-
-  if (el.isContentEditable) {
-    // Select all rồi delete để React nhận sự kiện xóa
-    document.execCommand('selectAll', false, null);
-    await sleep(50);
-    document.execCommand('delete', false, null);
-  } else {
-    // textarea / input: dùng native setter để bypass React
-    const proto = el.tagName === 'TEXTAREA'
-      ? window.HTMLTextAreaElement.prototype
-      : window.HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    if (setter) setter.call(el, '');
-    else el.value = '';
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-  await sleep(100);
+// ── React fiber: trigger onChange trực tiếp ───────────────────
+// React lưu event handlers trong __reactFiber* key trên DOM node.
+// Gọi trực tiếp để bypass DOM event và cập nhật React state.
+function getReactFiber(el) {
+  const key = Object.keys(el).find(k =>
+    k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance')
+  );
+  return key ? el[key] : null;
 }
 
-// ── Gõ text vào input — mô phỏng typing để React nhận onChange ──
-async function typeIntoInput(el, text) {
-  el.focus();
-  await sleep(100);
+function triggerReactInput(el, text) {
+  // Set nội dung DOM trước
+  el.textContent = text;
 
-  if (el.isContentEditable) {
-    // execCommand('insertText') là cách duy nhất React contenteditable nhận được
-    document.execCommand('insertText', false, text);
-
-    // Nếu execCommand không hoạt động (một số trình duyệt block), fallback clipboard
-    if (el.textContent.trim() === '') {
-      await pasteViaClipboard(el, text);
-    }
-  } else {
-    // textarea: native setter + React synthetic event
-    const proto = el.tagName === 'TEXTAREA'
-      ? window.HTMLTextAreaElement.prototype
-      : window.HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    if (setter) setter.call(el, text);
-    else el.value = text;
-
-    // Trigger đầy đủ các sự kiện React lắng nghe
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      cancelable: true,
-      inputType: 'insertText',
-      data: text,
-    }));
-  }
-}
-
-// Fallback: dùng Clipboard API để paste
-async function pasteViaClipboard(el, text) {
+  // Di chuyển cursor về cuối
   try {
-    await navigator.clipboard.writeText(text);
-    el.focus();
-    document.execCommand('paste');
-  } catch (_) {
-    // Clipboard bị block — thử DataTransfer
-    const dt = new DataTransfer();
-    dt.setData('text/plain', text);
-    el.dispatchEvent(new ClipboardEvent('paste', {
-      bubbles: true,
-      cancelable: true,
-      clipboardData: dt,
-    }));
+    const range = document.createRange();
+    const sel = window.getSelection();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (_) {}
+
+  // Tìm React's onInput/onChange handler qua fiber tree
+  let fiber = getReactFiber(el);
+  let found = false;
+  while (fiber) {
+    const props = fiber.memoizedProps;
+    if (props) {
+      const handler = props.onInput || props.onChange;
+      if (typeof handler === 'function') {
+        // Tạo synthetic-like event object mà React component đang chờ
+        const syntheticEvent = {
+          target: el,
+          currentTarget: el,
+          type: 'input',
+          nativeEvent: new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }),
+          preventDefault: () => {},
+          stopPropagation: () => {},
+        };
+        handler(syntheticEvent);
+        found = true;
+        break;
+      }
+    }
+    fiber = fiber.return;
   }
+
+  // Dù có hay không tìm được handler, vẫn fire DOM event để chắc chắn
+  el.dispatchEvent(new InputEvent('input', {
+    bubbles: true, cancelable: false,
+    inputType: 'insertText', data: text, composed: true,
+  }));
+
+  return found;
 }
 
-// ── Gửi prompt chính ─────────────────────────────────────────
+// ── Xóa input đúng cách ───────────────────────────────────────
+function clearReactInput(el) {
+  el.focus();
+  el.textContent = '';
+
+  let fiber = getReactFiber(el);
+  while (fiber) {
+    const props = fiber.memoizedProps;
+    if (props) {
+      const handler = props.onInput || props.onChange;
+      if (typeof handler === 'function') {
+        handler({
+          target: el, currentTarget: el, type: 'input',
+          nativeEvent: new InputEvent('input', { bubbles: true, data: '', inputType: 'deleteContentBackward' }),
+          preventDefault: () => {}, stopPropagation: () => {},
+        });
+        break;
+      }
+    }
+    fiber = fiber.return;
+  }
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', composed: true }));
+}
+
+// ── Gửi prompt ───────────────────────────────────────────────
 async function handleSendPrompt(prompt) {
   try {
     const input = findInput();
     if (!input) {
-      return { success: false, error: 'Không tìm thấy ô input. Hãy đảm bảo tab Google Flow đang mở đúng project.' };
+      return { success: false, error: 'Không tìm thấy ô chat. Đảm bảo tab Google Flow đang mở đúng project.' };
     }
 
-    // 1. Xóa nội dung cũ nếu có
-    await clearInput(input);
+    // 1. Xóa nội dung cũ
+    clearReactInput(input);
     await sleep(200);
 
-    // 2. Gõ prompt mới
-    await typeIntoInput(input, prompt);
-    await sleep(300);
+    // 2. Điền prompt qua React fiber
+    input.focus();
+    triggerReactInput(input, prompt);
+    await sleep(400);
 
-    // 3. Kiểm tra nội dung đã vào chưa
-    const content = input.isContentEditable ? input.textContent : input.value;
-    if (!content || content.trim() === '') {
-      return { success: false, error: 'Không thể điền text vào input (React block). Thử reload tab.' };
+    // 3. Kiểm tra text đã vào chưa
+    const content = input.textContent?.trim();
+    if (!content) {
+      // Fallback: execCommand (Chrome vẫn hỗ trợ)
+      input.focus();
+      document.execCommand('selectAll', false, null);
+      document.execCommand('insertText', false, prompt);
+      await sleep(300);
     }
 
-    // 4. Đợi send button sáng lên (enabled)
+    // 4. Đợi send button enabled (tối đa 3s)
     await waitUntil(() => {
       const btn = findSendButton();
       return btn && !btn.disabled;
     }, 3000);
+    await sleep(150);
 
-    await sleep(200);
-
-    // 5. Bấm send hoặc nhấn Enter
+    // 5. Click send
     const sendBtn = findSendButton();
     if (sendBtn && !sendBtn.disabled) {
       sendBtn.click();
     } else {
-      // Fallback: Enter key
-      input.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter', code: 'Enter', keyCode: 13,
-        bubbles: true, cancelable: true
-      }));
+      // Fallback: Enter
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
       await sleep(50);
-      input.dispatchEvent(new KeyboardEvent('keyup', {
-        key: 'Enter', code: 'Enter', keyCode: 13,
-        bubbles: true, cancelable: true
-      }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
     }
 
+    await sleep(300);
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
@@ -194,8 +191,7 @@ function countImages() {
 function isGenerating() {
   const selectors = [
     '[class*="loading"]', '[class*="spinner"]', '[class*="generating"]',
-    '[aria-label*="loading" i]', '[aria-label*="generating" i]',
-    '[role="progressbar"]',
+    '[aria-label*="loading" i]', '[aria-label*="generating" i]', '[role="progressbar"]',
   ];
   for (const sel of selectors) {
     try {
@@ -208,21 +204,12 @@ function isGenerating() {
 
 async function handleWaitForImage(timeoutMs) {
   const imgCountBefore = countImages();
-
-  // Đợi bắt đầu generate (tối đa 8s)
   await waitUntil(() => isGenerating(), 8000);
-
-  // Đợi generate xong
-  const done = await waitUntil(() => {
-    return countImages() > imgCountBefore && !isGenerating();
-  }, timeoutMs);
-
+  const done = await waitUntil(() => countImages() > imgCountBefore && !isGenerating(), timeoutMs);
   if (!done) {
-    // Dù không detect được ảnh mới — nếu không còn loading thì coi như xong
     if (!isGenerating()) return { success: true, note: 'Không detect ảnh mới nhưng không còn loading' };
     return { success: false, error: 'Timeout chờ generate' };
   }
-
   return { success: true };
 }
 
@@ -230,9 +217,9 @@ async function handleWaitForImage(timeoutMs) {
 function waitUntil(condition, timeoutMs, interval = 300) {
   return new Promise((resolve) => {
     const start = Date.now();
-    const check = setInterval(() => {
-      if (condition()) { clearInterval(check); resolve(true); }
-      else if (Date.now() - start >= timeoutMs) { clearInterval(check); resolve(false); }
+    const id = setInterval(() => {
+      if (condition()) { clearInterval(id); resolve(true); }
+      else if (Date.now() - start >= timeoutMs) { clearInterval(id); resolve(false); }
     }, interval);
   });
 }
