@@ -14,67 +14,37 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
-// ── Tìm ô input chat (ở vùng dưới màn hình) ─────────────────
+// ── Tìm ô input chat ─────────────────────────────────────────
+// Google Flow dùng div[contenteditable] làm chat input.
+// Textarea duy nhất trên trang là reCAPTCHA hidden — bỏ qua.
 function findInput() {
-  const threshold = window.innerHeight * 0.55; // chỉ lấy element dưới 55% chiều cao
-
-  // 1. Ưu tiên textarea/input thật ở vùng dưới
-  const textareas = [...document.querySelectorAll('textarea, input[type="text"]')];
-  for (const el of textareas) {
-    if (!isVisible(el)) continue;
-    const rect = el.getBoundingClientRect();
-    if (rect.top >= threshold) return el;
-  }
-
-  // 2. Fallback: contenteditable ở vùng dưới (loại trừ tiêu đề trên cùng)
   const editables = [...document.querySelectorAll('[contenteditable="true"]')];
-  const bottom = editables.filter(el => {
-    if (!isVisible(el)) return false;
-    const rect = el.getBoundingClientRect();
-    return rect.top >= threshold;
-  });
-  if (bottom.length > 0) {
-    // Lấy cái thấp nhất (gần đáy nhất)
-    return bottom.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
-  }
-
-  return null;
+  if (editables.length === 0) return null;
+  if (editables.length === 1) return editables[0];
+  // Nếu có nhiều: lấy cái thấp nhất (gần đáy màn hình nhất)
+  return editables.sort((a, b) =>
+    b.getBoundingClientRect().top - a.getBoundingClientRect().top
+  )[0];
 }
 
 // ── Tìm nút Send ─────────────────────────────────────────────
+// Container của input là grandparent (level 2).
+// Send button là button RIGHTMOST trong container đó.
 function findSendButton() {
   const input = findInput();
+  if (!input) return null;
 
-  if (input) {
-    // Đi ngược lên DOM tìm container chứa cả input lẫn send button
-    let container = input.parentElement;
-    for (let i = 0; i < 6; i++) {
-      if (!container) break;
-      const btns = [...container.querySelectorAll('button')].filter(b => isVisible(b) && !b.disabled && b.querySelector('svg'));
-      if (btns.length > 0) {
-        // Lấy button ở phải nhất trong container đó (send arrow)
-        return btns.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
-      }
-      container = container.parentElement;
-    }
-  }
+  // Đi lên 2 cấp để tới container chứa input + các action buttons
+  const container = input.parentElement?.parentElement;
+  if (!container) return null;
 
-  // Fallback: button nằm SAT cạnh ô input (khoảng cách ngang < 100px)
-  if (input) {
-    const inputRect = input.getBoundingClientRect();
-    const allBtns = [...document.querySelectorAll('button')];
-    const nearby = allBtns.filter(btn => {
-      if (!isVisible(btn) || btn.disabled) return false;
-      const r = btn.getBoundingClientRect();
-      // Cùng hàng ngang với input và nằm bên phải
-      return Math.abs(r.top - inputRect.top) < 60 && r.left >= inputRect.right - 20;
-    });
-    if (nearby.length > 0) {
-      return nearby.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
-    }
-  }
+  const btns = [...container.querySelectorAll('button')].filter(b => isVisible(b));
+  if (btns.length === 0) return null;
 
-  return null;
+  // Send button = rightmost button trong container
+  return btns.sort((a, b) =>
+    b.getBoundingClientRect().right - a.getBoundingClientRect().right
+  )[0];
 }
 
 function isVisible(el) {
