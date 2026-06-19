@@ -31,21 +31,38 @@ function findInput() {
 
 // ── Tìm nút Send ─────────────────────────────────────────────
 function findSendButton() {
-  // Tìm tất cả button, lọc button góc dưới-phải (vùng chat input)
-  const allBtns = [...document.querySelectorAll('button')];
-  const candidates = allBtns.filter(btn => {
-    if (!isVisible(btn)) return false;
-    const rect = btn.getBoundingClientRect();
-    return rect.bottom > window.innerHeight * 0.6 && rect.right > window.innerWidth * 0.5;
-  });
+  const input = findInput();
 
-  // Ưu tiên button không disabled, có chứa SVG (icon mũi tên gửi)
-  const withSvg = candidates.filter(b => b.querySelector('svg') && !b.disabled);
-  if (withSvg.length > 0) {
-    // Lấy button gần góc phải nhất
-    return withSvg.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
+  if (input) {
+    // Đi ngược lên DOM tìm container chứa cả input lẫn send button
+    let container = input.parentElement;
+    for (let i = 0; i < 6; i++) {
+      if (!container) break;
+      const btns = [...container.querySelectorAll('button')].filter(b => isVisible(b) && !b.disabled && b.querySelector('svg'));
+      if (btns.length > 0) {
+        // Lấy button ở phải nhất trong container đó (send arrow)
+        return btns.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
+      }
+      container = container.parentElement;
+    }
   }
-  return candidates.find(b => !b.disabled) || null;
+
+  // Fallback: button nằm SAT cạnh ô input (khoảng cách ngang < 100px)
+  if (input) {
+    const inputRect = input.getBoundingClientRect();
+    const allBtns = [...document.querySelectorAll('button')];
+    const nearby = allBtns.filter(btn => {
+      if (!isVisible(btn) || btn.disabled) return false;
+      const r = btn.getBoundingClientRect();
+      // Cùng hàng ngang với input và nằm bên phải
+      return Math.abs(r.top - inputRect.top) < 60 && r.left >= inputRect.right - 20;
+    });
+    if (nearby.length > 0) {
+      return nearby.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
+    }
+  }
+
+  return null;
 }
 
 function isVisible(el) {
