@@ -113,6 +113,30 @@ async function getFlowTab() {
   });
 }
 
+// Inject content script nếu chưa có (xử lý tab mở trước khi cài extension)
+async function ensureContentScript(tabId) {
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, { action: 'ping' }, (response) => {
+      if (chrome.runtime.lastError || !response) {
+        // Chưa có content script — inject thủ công
+        chrome.scripting.executeScript(
+          { target: { tabId }, files: ['content.js'] },
+          () => {
+            if (chrome.runtime.lastError) {
+              resolve(false);
+            } else {
+              // Đợi script khởi tạo xong
+              setTimeout(() => resolve(true), 500);
+            }
+          }
+        );
+      } else {
+        resolve(true); // đã có rồi
+      }
+    });
+  });
+}
+
 async function sendMessageToTab(tabId, message) {
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -161,8 +185,16 @@ btnStart.addEventListener('click', async () => {
   logArea.innerHTML = '';
   setProgress(0, prompts.length);
 
-  // Focus tab Flow
+  // Focus tab Flow và đảm bảo content script đã được inject
   chrome.tabs.update(tab.id, { active: true });
+  const injected = await ensureContentScript(tab.id);
+  if (!injected) {
+    addLog('Không thể inject script vào tab. Hãy reload tab Google Flow rồi thử lại.', 'error');
+    isRunning = false;
+    btnStart.disabled = false;
+    btnStop.style.display = 'none';
+    return;
+  }
 
   for (let i = 0; i < prompts.length; i++) {
     if (!isRunning) { addLog('Đã dừng bởi người dùng.', 'error'); break; }

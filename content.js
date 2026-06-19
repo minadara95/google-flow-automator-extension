@@ -116,6 +116,11 @@ function isGenerating() {
 
 // Lắng nghe message từ popup
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.action === 'ping') {
+    sendResponse({ success: true });
+    return;
+  }
+
   if (message.action === 'sendPrompt') {
     handleSendPrompt(message.prompt).then(sendResponse);
     return true; // async response
