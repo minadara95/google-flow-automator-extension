@@ -14,18 +14,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
-// ── Tìm ô input ──────────────────────────────────────────────
+// ── Tìm ô input chat (ở vùng dưới màn hình) ─────────────────
 function findInput() {
-  // Ưu tiên textarea/input thật
+  const threshold = window.innerHeight * 0.55; // chỉ lấy element dưới 55% chiều cao
+
+  // 1. Ưu tiên textarea/input thật ở vùng dưới
   const textareas = [...document.querySelectorAll('textarea, input[type="text"]')];
   for (const el of textareas) {
-    if (isVisible(el)) return el;
+    if (!isVisible(el)) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.top >= threshold) return el;
   }
-  // Fallback: contenteditable
+
+  // 2. Fallback: contenteditable ở vùng dưới (loại trừ tiêu đề trên cùng)
   const editables = [...document.querySelectorAll('[contenteditable="true"]')];
-  for (const el of editables) {
-    if (isVisible(el)) return el;
+  const bottom = editables.filter(el => {
+    if (!isVisible(el)) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.top >= threshold;
+  });
+  if (bottom.length > 0) {
+    // Lấy cái thấp nhất (gần đáy nhất)
+    return bottom.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
   }
+
   return null;
 }
 
