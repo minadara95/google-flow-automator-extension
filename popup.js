@@ -16,7 +16,7 @@ const btnGo = document.getElementById('btn-go');
 
 let isRunning = false;
 
-// ── URL helpers ──────────────────────────────────────────────
+// ── URL helpers ───────────────────────────────────────────────
 function isValidFlowUrl(url) {
   try {
     const u = new URL(url);
@@ -31,24 +31,17 @@ function updateUrlUi(url) {
   urlStatus.textContent = !url ? '—' : valid ? '✓' : '✗ URL không hợp lệ';
 }
 
-// Khôi phục URL đã lưu
 chrome.storage.local.get(['flowUrl'], ({ flowUrl }) => {
-  if (flowUrl) {
-    urlInput.value = flowUrl;
-    updateUrlUi(flowUrl);
-  }
+  if (flowUrl) { urlInput.value = flowUrl; updateUrlUi(flowUrl); }
 });
 
 urlInput.addEventListener('input', () => {
   const url = urlInput.value.trim();
   updateUrlUi(url);
-  if (isValidFlowUrl(url)) {
-    chrome.storage.local.set({ flowUrl: url });
-  }
+  if (isValidFlowUrl(url)) chrome.storage.local.set({ flowUrl: url });
 });
 
 urlInput.addEventListener('paste', () => {
-  // paste event fires before value updates — đợi một tick
   setTimeout(() => {
     const url = urlInput.value.trim();
     updateUrlUi(url);
@@ -58,11 +51,7 @@ urlInput.addEventListener('paste', () => {
 
 btnGo.addEventListener('click', async () => {
   const url = urlInput.value.trim();
-  if (!isValidFlowUrl(url)) {
-    alert('URL không hợp lệ. Ví dụ:\nhttps://labs.google/fx/vi/tools/flow/project/abc123');
-    return;
-  }
-  // Tìm tab đang mở URL này, nếu có thì focus; không thì mở tab mới
+  if (!isValidFlowUrl(url)) { alert('URL không hợp lệ.'); return; }
   chrome.tabs.query({ url: 'https://labs.google/*' }, (tabs) => {
     const existing = tabs.find(t => t.url && t.url.includes('/tools/flow/'));
     if (existing) {
@@ -74,12 +63,9 @@ btnGo.addEventListener('click', async () => {
   });
 });
 
-// ── Prompt parser ────────────────────────────────────────────
+// ── Prompt parser ─────────────────────────────────────────────
 function parsePrompts(text) {
-  return text
-    .split(/\n\s*\n/)
-    .map(p => p.trim())
-    .filter(p => p.length > 0);
+  return text.split(/\n\s*\n/).map(p => p.trim()).filter(p => p.length > 0);
 }
 
 promptsInput.addEventListener('input', () => {
@@ -87,7 +73,7 @@ promptsInput.addEventListener('input', () => {
   promptStats.innerHTML = prompts.length > 0 ? `<b>${prompts.length}</b> prompt được phát hiện` : '';
 });
 
-// ── Log helpers ──────────────────────────────────────────────
+// ── Log helpers ───────────────────────────────────────────────
 function addLog(text, type = 'done') {
   const icons = { done: '✓', running: '⟳', error: '✗' };
   const item = document.createElement('div');
@@ -98,40 +84,31 @@ function addLog(text, type = 'done') {
 }
 
 function setProgress(current, total) {
-  const pct = total > 0 ? (current / total) * 100 : 0;
-  progressBar.style.width = pct + '%';
+  progressBar.style.width = total > 0 ? (current / total) * 100 + '%' : '0%';
   progressText.textContent = `${current} / ${total}`;
 }
 
-// ── Tab helpers ──────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── Tab helpers ───────────────────────────────────────────────
 async function getFlowTab() {
   return new Promise((resolve) => {
     chrome.tabs.query({ url: 'https://labs.google/*' }, (tabs) => {
-      const tab = tabs.find(t => t.url && t.url.includes('/tools/flow/'));
-      resolve(tab || null);
+      resolve(tabs.find(t => t.url && t.url.includes('/tools/flow/')) || null);
     });
   });
 }
 
-// Inject content script nếu chưa có (xử lý tab mở trước khi cài extension)
 async function ensureContentScript(tabId) {
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, { action: 'ping' }, (response) => {
       if (chrome.runtime.lastError || !response) {
-        // Chưa có content script — inject thủ công
-        chrome.scripting.executeScript(
-          { target: { tabId }, files: ['content.js'] },
-          () => {
-            if (chrome.runtime.lastError) {
-              resolve(false);
-            } else {
-              // Đợi script khởi tạo xong
-              setTimeout(() => resolve(true), 500);
-            }
-          }
-        );
+        chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }, () => {
+          if (chrome.runtime.lastError) resolve(false);
+          else setTimeout(() => resolve(true), 500);
+        });
       } else {
-        resolve(true); // đã có rồi
+        resolve(true);
       }
     });
   });
@@ -140,24 +117,91 @@ async function ensureContentScript(tabId) {
 async function sendMessageToTab(tabId, message) {
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
-      if (chrome.runtime.lastError) {
-        resolve({ success: false, error: chrome.runtime.lastError.message });
-      } else {
-        resolve(response || { success: false });
-      }
+      if (chrome.runtime.lastError) resolve({ success: false, error: chrome.runtime.lastError.message });
+      else resolve(response || { success: false });
     });
   });
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// ── Gửi prompt qua executeScript world:MAIN ──────────────────
+// Chạy trực tiếp trong JavaScript context của trang — execCommand
+// hoạt động đúng, không bị block bởi popup focus.
+async function sendPromptMainWorld(tabId, prompt) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: async (promptText) => {
+        function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ── Main automation ──────────────────────────────────────────
+        function findInput() {
+          const all = [...document.querySelectorAll('[contenteditable="true"]')];
+          if (!all.length) return null;
+          return all.sort((a, b) =>
+            b.getBoundingClientRect().top - a.getBoundingClientRect().top
+          )[0];
+        }
+
+        function findSendButton(input) {
+          const container = input.parentElement?.parentElement;
+          if (!container) return null;
+          const btns = [...container.querySelectorAll('button')].filter(b => {
+            if (!b) return false;
+            const r = b.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+          if (!btns.length) return null;
+          return btns.sort((a, b) =>
+            b.getBoundingClientRect().right - a.getBoundingClientRect().right
+          )[0];
+        }
+
+        const input = findInput();
+        if (!input) return { success: false, error: 'Không tìm thấy ô chat.' };
+
+        // Focus và clear
+        input.click();
+        input.focus();
+        await sleep(200);
+        document.execCommand('selectAll', false, null);
+        await sleep(80);
+
+        // Gõ text — trong MAIN world execCommand hoạt động bình thường
+        document.execCommand('insertText', false, promptText);
+        await sleep(500);
+
+        const hasText = input.textContent?.trim().length > 0;
+        if (!hasText) return { success: false, error: 'execCommand không điền được text.' };
+
+        // Đợi send button enabled tối đa 4s
+        let sendBtn = null;
+        for (let i = 0; i < 40; i++) {
+          sendBtn = findSendButton(input);
+          if (sendBtn && !sendBtn.disabled) break;
+          await sleep(100);
+        }
+
+        if (!sendBtn || sendBtn.disabled) {
+          return { success: false, error: `Send button vẫn disabled. Text: "${input.textContent?.slice(0, 40)}"` };
+        }
+
+        sendBtn.click();
+        await sleep(300);
+        return { success: true };
+      },
+      args: [prompt],
+    });
+
+    return results?.[0]?.result || { success: false, error: 'executeScript không trả về kết quả.' };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+// ── Main automation ───────────────────────────────────────────
 btnStart.addEventListener('click', async () => {
   const prompts = parsePrompts(promptsInput.value);
-  if (prompts.length === 0) {
-    alert('Vui lòng nhập ít nhất 1 prompt!');
-    return;
-  }
+  if (prompts.length === 0) { alert('Vui lòng nhập ít nhất 1 prompt!'); return; }
 
   const savedUrl = urlInput.value.trim();
   if (!isValidFlowUrl(savedUrl)) {
@@ -166,7 +210,6 @@ btnStart.addEventListener('click', async () => {
     return;
   }
 
-  // Tìm tab đang mở — nếu chưa có, mở rồi đợi load
   let tab = await getFlowTab();
   if (!tab) {
     chrome.tabs.create({ url: savedUrl });
@@ -185,11 +228,12 @@ btnStart.addEventListener('click', async () => {
   logArea.innerHTML = '';
   setProgress(0, prompts.length);
 
-  // Focus tab Flow và đảm bảo content script đã được inject
+  // Focus tab và inject content script (cho waitForImage)
   chrome.tabs.update(tab.id, { active: true });
+  chrome.windows.update(tab.windowId, { focused: true });
   const injected = await ensureContentScript(tab.id);
   if (!injected) {
-    addLog('Không thể inject script vào tab. Hãy reload tab Google Flow rồi thử lại.', 'error');
+    addLog('Không inject được content script. Reload tab Google Flow rồi thử lại.', 'error');
     isRunning = false;
     btnStart.disabled = false;
     btnStop.style.display = 'none';
@@ -204,10 +248,11 @@ btnStart.addEventListener('click', async () => {
     currentPromptText.textContent = `▶ ${short}`;
     addLog(`[${i + 1}/${prompts.length}] Đang gửi prompt…`, 'running');
 
-    const sendResult = await sendMessageToTab(tab.id, { action: 'sendPrompt', prompt });
+    // Dùng executeScript MAIN world thay vì messaging
+    const sendResult = await sendPromptMainWorld(tab.id, prompt);
 
     if (!sendResult.success) {
-      addLog(`[${i + 1}] Lỗi gửi — ${sendResult.error || 'không tìm thấy input'}`, 'error');
+      addLog(`[${i + 1}] Lỗi: ${sendResult.error}`, 'error');
       setProgress(i + 1, prompts.length);
       continue;
     }
@@ -222,7 +267,6 @@ btnStart.addEventListener('click', async () => {
     }
 
     setProgress(i + 1, prompts.length);
-
     if (i < prompts.length - 1 && isRunning) await sleep(delayMs);
   }
 
